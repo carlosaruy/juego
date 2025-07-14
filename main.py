@@ -14,7 +14,6 @@ from sse_starlette.sse import EventSourceResponse
 from questions_data import QUESTION_OPTIONS
 
 # TODO: implementar autenticacion real con JWT
-USER_ID = 1
 
 COEFFICIENTS = [1.0, 0.7, 0.4, 0.1, 0]
 MAX_ATTEMPTS = 4
@@ -37,6 +36,18 @@ def get_db():
     conn = sqlite3.connect("quiz.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def ensure_user(conn: sqlite3.Connection, name: str, group_id: int) -> int:
+    """Obtiene el id de usuario o lo crea si no existe."""
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM "User" WHERE name=? AND group_id=?', (name, group_id))
+    row = cur.fetchone()
+    if row:
+        return row["id"]
+    cur.execute('INSERT INTO "User"(name, group_id) VALUES (?, ?)', (name, group_id))
+    conn.commit()
+    return cur.lastrowid
 
 
 def compute_scoreboard(conn: sqlite3.Connection, group_id: int):
@@ -91,13 +102,15 @@ async def get_question(question_id: int):
 @app.post("/attempts")
 async def attempt(request: Request):
     data = await request.json()
-    user_id = data.get("user_id", USER_ID)
+    user_name = data.get("user_name")
+    group_id = data.get("group_id")
     question_id = data.get("question_id")
     option = data.get("option")
-    if question_id is None or option is None:
+    if not user_name or group_id is None or question_id is None or option is None:
         raise HTTPException(status_code=400, detail="Datos incompletos")
 
     conn = get_db()
+    user_id = ensure_user(conn, user_name, group_id)
     cur = conn.cursor()
     cur.execute("SELECT correct_option FROM Question WHERE id=?", (question_id,))
     q = cur.fetchone()
@@ -154,8 +167,11 @@ async def scoreboard_events(group_id: int):
         try:
             await broadcast_scoreboard(group_id)
             while True:
-                data = await queue.get()
-                yield {"event": "scoreboard", "data": data}
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield {"event": "scoreboard", "data": data}
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "keep"}
         finally:
             listeners[group_id].remove(queue)
 

@@ -2,42 +2,42 @@
 <html lang="es" x-data="quizApp()" x-init="init()">
 <head>
     <meta charset="UTF-8">
-    <title>Quiz</title>
-    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.6/dist/ext/json-enc.js"></script>
+    <title>Juego de Preguntas</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@1.*/css/pico.min.css">
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
 </head>
 <body>
-    <div id="question">
+<main class="container">
+    <section id="question">
         <h2 x-text="question.text"></h2>
         <div>
             <template x-for="(opt, idx) in question.options" :key="idx">
-                <button
-                    :id="'btn'+idx"
-                    class="option"
-                    hx-post="/attempts"
-                    hx-ext="json-enc"
-                    :hx-vals="JSON.stringify({user_id: 1, question_id: question.id, option: idx})"
-                    hx-swap="none"
-                    @click.prevent="selected=idx"
-                    :disabled="disabled[idx]"
-                    x-text="opt">
-                </button>
+                <button @click="sendAttempt(idx)" :disabled="disabled[idx]" x-text="opt"></button>
             </template>
         </div>
-    </div>
+    </section>
 
-    <div id="modal" x-show="modal" style="display:none; border:1px solid #000; padding:1em;">
-        <span x-text="modal"></span>
-        <button @click="modal='';">Cerrar</button>
-    </div>
+    <dialog x-ref="feedback" :open="modalVisible">
+        <p x-text="modalText"></p>
+        <button @click="closeModal">Aceptar</button>
+    </dialog>
 
-    <h3>Scoreboard</h3>
+    <dialog x-ref="userDialog" :open="userModal">
+        <form @submit.prevent="saveUser">
+            <label>Nombre <input x-model="username" required></label>
+            <label>Grupo <input type="number" x-model.number="group" required></label>
+            <button type="submit">Empezar</button>
+        </form>
+    </dialog>
+
+    <h3>Puntajes</h3>
     <table>
         <thead><tr><th>Usuario</th><th>Puntos</th></tr></thead>
-        <tbody id="scoreboard"></tbody>
+        <tbody x-ref="scoreboard"></tbody>
     </table>
 
-    <script src="/static/js/app.js"></script>
+    <p x-show="finished">Juego terminado. Puntaje final: <span x-text="finalScore"></span></p>
+</main>
+<script src="/static/js/app.js"></script>
 </body>
 </html>
