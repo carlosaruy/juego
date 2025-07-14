@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="es" x-data="quizApp()" x-init="init()">
+<head>
+    <meta charset="UTF-8">
+    <title>Quiz</title>
+    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.6/dist/ext/json-enc.js"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+<body>
+    <div id="question">
+        <h2 x-text="question.text"></h2>
+        <div>
+            <template x-for="(opt, idx) in question.options" :key="idx">
+                <button
+                    :id="'btn'+idx"
+                    class="option"
+                    hx-post="/attempts"
+                    hx-ext="json-enc"
+                    :hx-vals="JSON.stringify({user_id: 1, question_id: question.id, option: idx})"
+                    hx-swap="none"
+                    @click.prevent="selected=idx"
+                    :disabled="disabled[idx]"
+                    x-text="opt">
+                </button>
+            </template>
+        </div>
+    </div>
+
+    <div id="modal" x-show="modal" style="display:none; border:1px solid #000; padding:1em;">
+        <span x-text="modal"></span>
+        <button @click="modal='';">Cerrar</button>
+    </div>
+
+    <h3>Scoreboard</h3>
+    <table>
+        <thead><tr><th>Usuario</th><th>Puntos</th></tr></thead>
+        <tbody id="scoreboard"></tbody>
+    </table>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
