@@ -44,14 +44,17 @@ listeners: Dict[int, List[asyncio.Queue]] = {}
 admin_listeners: List[asyncio.Queue] = []
 
 def ensure_settings():
+    """Create the Settings table and default values if they don't exist."""
     conn = get_db()
     cur = conn.cursor()
-    cur.execute('CREATE TABLE IF NOT EXISTS Settings (key TEXT PRIMARY KEY, value TEXT)')
-    cur.execute('INSERT OR IGNORE INTO Settings(key,value) VALUES ("registration_open","1")')
+    cur.execute(
+        'CREATE TABLE IF NOT EXISTS Settings (key TEXT PRIMARY KEY, value TEXT)'
+    )
+    cur.execute(
+        'INSERT OR IGNORE INTO Settings(key,value) VALUES ("registration_open","1")'
+    )
     conn.commit()
     conn.close()
-
-ensure_settings()
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str = "1") -> str:
     cur = conn.cursor()
@@ -107,6 +110,10 @@ def get_db():
     conn = sqlite3.connect("quiz.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# Ensure database tables are in place on startup
+ensure_settings()
 
 
 def ensure_user(conn: sqlite3.Connection, name: str, group_id: int) -> int:
