@@ -11,20 +11,43 @@ function quizApp() {
         finished: false,
         finalScore: 0,
         scoreData: [],
+        closed: false,
         init() {
-            this.username = localStorage.getItem('username');
-            this.group = localStorage.getItem('group');
-            if (!this.username || !this.group) {
-                this.userModal = true;
-            } else {
-                this.start();
-            }
+            fetch('/settings/registration')
+                .then(r => r.json())
+                .then(cfg => {
+                    this.username = localStorage.getItem('username');
+                    this.group = localStorage.getItem('group');
+                    if (!this.username || !this.group) {
+                        if (!cfg.registration_open) {
+                            this.closed = true;
+                            return;
+                        }
+                        this.userModal = true;
+                    } else {
+                        this.start();
+                    }
+                });
         },
         saveUser() {
-            localStorage.setItem('username', this.username);
-            localStorage.setItem('group', this.group);
-            this.userModal = false;
-            this.start();
+            fetch('/register', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: this.username, group_id: parseInt(this.group)})
+            }).then(r => {
+                if (r.status === 403) {
+                    this.closed = true;
+                    this.userModal = false;
+                    return null;
+                }
+                return r.json();
+            }).then(data => {
+                if (!data) return;
+                localStorage.setItem('username', this.username);
+                localStorage.setItem('group', this.group);
+                this.userModal = false;
+                this.start();
+            });
         },
         start() {
             this.connectSSE();
@@ -93,6 +116,7 @@ function quizApp() {
                     tbody.appendChild(tr);
                 });
             });
+            evt.addEventListener('ping', () => {});
         },
         getMyPoints() {
             const row = this.scoreData.find(r => r.user === this.username);

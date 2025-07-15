@@ -30,6 +30,8 @@ def main():
     conn = sqlite3.connect("quiz.db")
     c = conn.cursor()
 
+    c.execute('CREATE TABLE IF NOT EXISTS Settings (key TEXT PRIMARY KEY, value TEXT)')
+
     c.execute('CREATE TABLE IF NOT EXISTS "Group" (id INTEGER PRIMARY KEY, name TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS "User" (id INTEGER PRIMARY KEY, name TEXT, group_id INTEGER)')
     c.execute("""CREATE TABLE IF NOT EXISTS Question (
@@ -49,6 +51,7 @@ def main():
     c.executemany('INSERT INTO "Group"(id,name) VALUES (?,?)', GROUPS)
     c.executemany('INSERT INTO "User"(id,name,group_id) VALUES (?,?,?)', USERS)
     c.executemany("INSERT INTO Question(id,text,correct_option) VALUES (?,?,?)", QUESTIONS)
+    c.execute('INSERT OR IGNORE INTO Settings(key,value) VALUES ("registration_open","1")')
     conn.commit()
     conn.close()
     print("Base de datos inicializada")

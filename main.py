@@ -2,16 +2,26 @@
 import json
 import sqlite3
 import asyncio
+import os
+import io
+import csv
+import secrets
 from datetime import datetime
 from typing import Dict, List
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from questions_data import QUESTION_OPTIONS
+from dotenv import load_dotenv
+
+load_dotenv()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+security = HTTPBasic()
 
 # TODO: implementar autenticacion real con JWT
 
@@ -31,6 +41,67 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Diccionario de listeners para SSE por grupo
 listeners: Dict[int, List[asyncio.Queue]] = {}
+admin_listeners: List[asyncio.Queue] = []
+
+def ensure_settings():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('CREATE TABLE IF NOT EXISTS Settings (key TEXT PRIMARY KEY, value TEXT)')
+    cur.execute('INSERT OR IGNORE INTO Settings(key,value) VALUES ("registration_open","1")')
+    conn.commit()
+    conn.close()
+
+ensure_settings()
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "1") -> str:
+    cur = conn.cursor()
+    cur.execute('SELECT value FROM Settings WHERE key=?', (key,))
+    row = cur.fetchone()
+    return row["value"] if row else default
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str):
+    cur = conn.cursor()
+    cur.execute('INSERT OR REPLACE INTO Settings(key,value) VALUES (?,?)', (key, value))
+    conn.commit()
+
+def compute_global_scoreboard(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute('SELECT id, name, group_id FROM "User"')
+    users = cur.fetchall()
+    scoreboard = []
+    for u in users:
+        total = 0
+        cur.execute(
+            'SELECT question_id, option, is_correct, created_at FROM Attempt WHERE user_id=? ORDER BY question_id, created_at',
+            (u["id"],),
+        )
+        by_question: Dict[int, List[sqlite3.Row]] = {}
+        for row in cur.fetchall():
+            by_question.setdefault(row["question_id"], []).append(row)
+        for q_attempts in by_question.values():
+            for idx, att in enumerate(q_attempts):
+                if att["is_correct"]:
+                    coef = COEFFICIENTS[idx]
+                    total += int(100 * coef)
+                    break
+        scoreboard.append({"group": u["group_id"], "user": u["name"], "points": total})
+    return scoreboard
+
+def questions_remaining(conn: sqlite3.Connection) -> int:
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM Question')
+    total = cur.fetchone()[0]
+    cur.execute('SELECT MAX(question_id) FROM Attempt')
+    row = cur.fetchone()
+    answered = row[0] if row and row[0] else 0
+    return max(total - answered, 0)
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, "admin")
+    correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+    if not (correct_username and correct_password):
+        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
+    return True
 
 def get_db():
     conn = sqlite3.connect("quiz.db", check_same_thread=False)
@@ -85,6 +156,38 @@ async def broadcast_scoreboard(group_id: int):
     for q in queues:
         await q.put(data)
 
+async def broadcast_global():
+    conn = get_db()
+    scoreboard = compute_global_scoreboard(conn)
+    conn.close()
+    data = json.dumps(scoreboard)
+    for q in admin_listeners:
+        await q.put(data)
+
+
+@app.get("/settings/registration")
+async def get_registration_state():
+    conn = get_db()
+    open_flag = get_setting(conn, "registration_open", "1") == "1"
+    conn.close()
+    return {"registration_open": open_flag}
+
+
+@app.post("/register")
+async def register_user(request: Request):
+    data = await request.json()
+    name = data.get("name")
+    group_id = data.get("group_id")
+    if not name or group_id is None:
+        raise HTTPException(status_code=400, detail="datos incompletos")
+    conn = get_db()
+    if get_setting(conn, "registration_open", "1") == "0":
+        conn.close()
+        raise HTTPException(status_code=403, detail="registration closed")
+    user_id = ensure_user(conn, name, int(group_id))
+    conn.close()
+    return {"user_id": user_id}
+
 
 @app.get("/questions/{question_id}")
 async def get_question(question_id: int):
@@ -110,7 +213,16 @@ async def attempt(request: Request):
         raise HTTPException(status_code=400, detail="Datos incompletos")
 
     conn = get_db()
-    user_id = ensure_user(conn, user_name, group_id)
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM "User" WHERE name=? AND group_id=?', (user_name, group_id))
+    row = cur.fetchone()
+    if not row:
+        if get_setting(conn, "registration_open", "1") == "0":
+            conn.close()
+            raise HTTPException(status_code=403, detail="registration closed")
+        user_id = ensure_user(conn, user_name, group_id)
+    else:
+        user_id = row["id"]
     cur = conn.cursor()
     cur.execute("SELECT correct_option FROM Question WHERE id=?", (question_id,))
     q = cur.fetchone()
@@ -145,6 +257,7 @@ async def attempt(request: Request):
 
     if group_id:
         await broadcast_scoreboard(group_id)
+    await broadcast_global()
 
     attempts_left = MAX_ATTEMPTS - prev_attempts - 1
     return JSONResponse(
@@ -168,12 +281,71 @@ async def scoreboard_events(group_id: int):
             await broadcast_scoreboard(group_id)
             while True:
                 try:
-                    data = await asyncio.wait_for(queue.get(), timeout=15)
+                    data = await asyncio.wait_for(queue.get(), timeout=25)
                     yield {"event": "scoreboard", "data": data}
                 except asyncio.TimeoutError:
-                    yield {"event": "ping", "data": "keep"}
+                    yield {"event": "ping", "data": "{}"}
         finally:
             listeners[group_id].remove(queue)
+
+    return EventSourceResponse(event_generator())
+
+
+@app.post("/admin/toggle-registration")
+async def toggle_registration(_: bool = Depends(verify_admin)):
+    conn = get_db()
+    current = get_setting(conn, "registration_open", "1") == "1"
+    set_setting(conn, "registration_open", "0" if current else "1")
+    new_val = not current
+    conn.close()
+    await broadcast_global()
+    return {"registration_open": new_val}
+
+
+@app.get("/admin/status")
+async def admin_status(_: bool = Depends(verify_admin)):
+    conn = get_db()
+    reg = get_setting(conn, "registration_open", "1") == "1"
+    remaining = questions_remaining(conn)
+    conn.close()
+    return {"registration_open": reg, "remaining": remaining}
+
+
+@app.get("/admin/export")
+async def export_csv(_: bool = Depends(verify_admin)):
+    conn = get_db()
+    scoreboard = compute_global_scoreboard(conn)
+    conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["group", "user", "points"])
+    for row in scoreboard:
+        writer.writerow([row["group"], row["user"], row["points"]])
+    csv_data = output.getvalue()
+    return Response(content=csv_data, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=scoreboard.csv"})
+
+
+@app.get("/admin")
+async def admin_panel(_: bool = Depends(verify_admin)):
+    return FileResponse("static/admin.html")
+
+
+@app.get("/events/admin")
+async def admin_events(_: bool = Depends(verify_admin)):
+    queue: asyncio.Queue = asyncio.Queue()
+    admin_listeners.append(queue)
+
+    async def event_generator():
+        try:
+            await broadcast_global()
+            while True:
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield {"event": "scoreboard", "data": data}
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "{}"}
+        finally:
+            admin_listeners.remove(queue)
 
     return EventSourceResponse(event_generator())
 
